@@ -17,3 +17,13 @@ such as md5). The vectors are then added up.
 The vectors thus gained can be summed up for each group (e.g. service), forming
 a group vector. The similarity of those group vectors can then be compared for
 each service using cosinus-similarity (hence the name.)
+
+## Todos
+
+* [ ] Parser for journald-export files
+* [ ] ngrams
+* [ ] vector stuff
+
+...
+
+* [ ] Use AVX and such to be fancy and fast
