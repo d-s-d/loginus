@@ -303,36 +303,40 @@ impl<'a, R> Iterator for FieldIterator<'a, R> {
 mod tests {
     use std::fs::OpenOptions;
 
-    use super::BufJournalExportRead;
+    use super::{BufJournalExportRead, JournaldReadError};
 
     #[test]
-    fn read_file() -> Result<(), Box<dyn std::error::Error + 'static>> {
-        let f = OpenOptions::new()
-            .read(true)
-            .open("/Users/dsd/2024-05-13_testexport.journalexport")?;
+    fn can_parse_host_files() -> Result<(), Box<dyn std::error::Error + 'static>> {
+        let test_files = std::env::var("JOURNALD_TESTFILES").unwrap_or_default();
+        let test_files: Vec<_> = test_files.split(',').collect();
 
-        let mut export_read = BufJournalExportRead::new(f);
+        for fpath in test_files {
+            let f = OpenOptions::new()
+                .read(true)
+                .open(fpath)?;
 
-        let mut count = 0;
-        loop {
-            match export_read.parse_next() {
-                Ok(i) => {
-                    println!("asdf");
-                    count += 1;
-                    for (name, content, typ) in i {
-                        let conv = |c: &[u8]| String::from_utf8_lossy(c).to_string();
-                        // println!("{:?} {:?} {:?}", conv(name), conv(content), typ);
+            let mut export_read = BufJournalExportRead::new(f);
+
+            loop {
+                match export_read.parse_next() {
+                    Ok(i) => {
+                        let mut found_cursor = false;
+                        for (name, _content, _typ) in i {
+                            if name == b"__CURSOR" {
+                                found_cursor = true;
+                            }
+                        }
+                        assert!(found_cursor);
                     }
-                }
-                Err(e) => {
-                    println!("{:?}", e);
-                    break;
+                    Err(JournaldReadError::Eof) => {
+                        break;
+                    }
+                    Err(e) => {
+                        println!("{:?}", e);
+                    }
                 }
             }
         }
-
-        println!("count: {}", count);
-        println!("buf size: {}", export_read.buf.len());
 
         Ok(())
     }
