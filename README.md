@@ -1,6 +1,32 @@
 # loginus
 
-## Example use case
+This crate constitutes a collection of utility (libraries) to parse and
+manipulate log streams in the Journal Export Format of journald.
+
+## Compression
+
+In this section, we describe the kind of experiments that we want to conduct
+regarding compression.
+
+Generally, when shipping logs, there is a trade-off between bandwidth and
+getting logs in real-time: The shorter the delay, the less effective the
+compression becomes as shorter segments need to be compressed individually. On
+the other hand, the larger a batch, the longer the delay until a log message
+appears in the monitoring system.
+
+We are interesting the following questions:
+
+* Compressing log entries individually using a dictionary created with
+  individual log entries, what is the average compression ratio?
+* What is the compression ratio for randomnly sampled subsequences of
+  lengths 1, 2, 4, 8, ...?
+
+## Similarity analysis
+
+Given a subsequence of logs (e.g. the ones belonging to a service), provide a
+normalized vector that represents that log stream.
+
+### Example use case
 
 Imagine you have two journals of two CI-runs of a reasonably complex system. One
 run consistutes a success, the other a failure. You want to know: Which is the
@@ -20,7 +46,8 @@ each service using cosinus-similarity (hence the name.)
 
 ## Todos
 
-* [ ] Parser for journald-export files
+* [x] Parser for journald-export files
+* [ ] Compression experiments
 * [ ] ngrams
 * [ ] vector stuff
 

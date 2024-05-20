@@ -118,10 +118,10 @@ pub mod parser {
         pub fn parse(&mut self) -> BufferState<()> {
             loop {
                 if self.cur_pos == self.buf_stop {
-                    if !matches!(self.parse_state, ParserState::EntryStart) {
-                        return BufferState::Underfilled(self.cycle_buffer());
+                    if matches!(self.parse_state, ParserState::EntryStart) {
+                        return BufferState::UnderfilledEntryStart(self.cycle_buffer());
                     } else {
-                        return self.close_on_err(Err(JournalExportReadError::Eof));
+                        return BufferState::Underfilled(self.cycle_buffer());
                     }
                 }
 
@@ -186,7 +186,7 @@ pub mod parser {
                         // <-namelen-> +  1 + <----8 bytes----->
                         let len_stop = self.field_start + self.namelen + 9;
                         self.cur_pos = self.buf_stop.min(len_stop);
-                        if self.cur_pos < len_stop {
+                        if self.cur_pos < len_stop || self.cur_pos == self.buf_stop {
                             ParserState::BinaryValueLen
                         } else {
                             let mut le_bytes = [0u8; 8];
@@ -200,7 +200,7 @@ pub mod parser {
                         let stop_pos =
                             self.field_start + self.namelen + 9 + self.remaining as usize;
                         self.cur_pos = self.buf_stop.min(stop_pos);
-                        if self.cur_pos < stop_pos {
+                        if self.cur_pos < stop_pos || self.cur_pos == self.buf_stop {
                             ParserState::BinaryValue
                         } else {
                             c = self.buf[self.cur_pos];
@@ -264,6 +264,7 @@ pub mod parser {
     pub enum BufferState<'a, T> {
         Result(Result<T, JournalExportReadError>),
         Underfilled(&'a mut [u8]),
+        UnderfilledEntryStart(&'a mut [u8]),
     }
 
     enum ParserState {
@@ -358,11 +359,20 @@ pub mod sync {
             loop {
                 match self.parse_state.parse() {
                     BufferState::Result(Ok(())) => return Ok(()),
-                    BufferState::Result(Err(e)) => return Err::<_, JournalExportReadError>(e),
+                    BufferState::Result(Err(e)) => {
+                        return Err::<_, JournalExportReadError>(e);
+                    }
                     BufferState::Underfilled(b) => {
                         let n = self.buf_read.read(b)?;
                         if n == 0 {
                             return Err(JournalExportReadError::UnexpectedEof);
+                        }
+                        self.parse_state.advance(n);
+                    }
+                    BufferState::UnderfilledEntryStart(b) => {
+                        let n = self.buf_read.read(b)?;
+                        if n == 0 {
+                            return Err(JournalExportReadError::Eof);
                         }
                         self.parse_state.advance(n);
                     }
@@ -400,6 +410,13 @@ impl<R: AsyncRead + Unpin> JournalExportAsyncRead<R> {
                     let n = self.buf_read.read(b).await?;
                     if n == 0 {
                         return Err(JournalExportReadError::UnexpectedEof);
+                    }
+                    self.parse_state.advance(n);
+                }
+                BufferState::UnderfilledEntryStart(b) => {
+                    let n = self.buf_read.read(b).await?;
+                    if n == 0 {
+                        return Err(JournalExportReadError::Eof);
                     }
                     self.parse_state.advance(n);
                 }
@@ -446,6 +463,7 @@ mod tests {
 
             let mut export_read = JournalExportRead::new(f);
 
+            let mut count = 0usize;
             loop {
                 match export_read.parse_next() {
                     Ok(_) => {
@@ -460,6 +478,7 @@ mod tests {
                             }
                         }
                         assert!(found_cursor);
+                        count += 1;
                     }
                     Err(JournalExportReadError::Eof | JournalExportReadError::UnexpectedEof) => {
                         break;
@@ -470,6 +489,7 @@ mod tests {
                     }
                 }
             }
+            println!("count: {}", count);
         }
 
         Ok(())
