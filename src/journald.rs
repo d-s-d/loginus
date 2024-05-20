@@ -45,7 +45,6 @@ pub mod parser {
         parse_state: ParserState,
 
         field_offsets: Vec<FieldOffset>,
-        completed_field_offsets: Vec<FieldOffset>,
     }
 
     impl JournalExportParseBuffer {
@@ -63,7 +62,6 @@ pub mod parser {
 
                 parse_state: ParserState::FieldStart,
                 field_offsets: vec![],
-                completed_field_offsets: vec![],
             }
         }
 
@@ -238,15 +236,20 @@ pub mod parser {
             }
         }
 
-        pub fn get_entry(&mut self) -> JournalEntry<'_> {
-            std::mem::swap(&mut self.field_offsets, &mut self.completed_field_offsets);
-            self.field_offsets.clear();
+        #[inline]
+        pub fn get_entry(&self) -> JournalEntry<'_> {
             JournalEntry {
                 index: 0,
                 reader: self,
             }
         }
 
+        #[inline]
+        pub fn clear_entry(&mut self) {
+            self.field_offsets.clear();
+        }
+
+        #[inline]
         fn close_on_err<T>(&mut self, r: Result<T, JournalExportReadError>) -> BufferState<T> {
             match r {
                 Err(e) => {
@@ -280,7 +283,7 @@ pub mod parser {
 
     impl<'a> JournalEntry<'a> {
         pub fn as_bytes(&self) -> &'a [u8] {
-            let start = self.reader.completed_field_offsets[0].start;
+            let start = self.reader.field_offsets[0].start;
             &self.reader.buf[start..self.reader.cur_pos]
         }
     }
@@ -289,26 +292,22 @@ pub mod parser {
         type Item = (&'a [u8], &'a [u8], FieldType);
 
         fn next(&mut self) -> Option<Self::Item> {
-            let field_stop = if self.index + 1 < self.reader.completed_field_offsets.len() {
-                self.reader.completed_field_offsets[self.index + 1].start - 1
+            let field_stop = if self.index + 1 < self.reader.field_offsets.len() {
+                self.reader.field_offsets[self.index + 1].start - 1
             } else {
                 self.reader.cur_pos - 2
             };
-            let res = self
-                .reader
-                .completed_field_offsets
-                .get(self.index)
-                .map(|f| {
-                    let bin_offset = match &f.typ {
-                        FieldType::Binary => 9,
-                        FieldType::String => 1,
-                    };
-                    (
-                        &self.reader.buf[f.start..(f.start + f.namelen)],
-                        &self.reader.buf[(f.start + f.namelen + bin_offset)..field_stop],
-                        f.typ.clone(),
-                    )
-                });
+            let res = self.reader.field_offsets.get(self.index).map(|f| {
+                let bin_offset = match &f.typ {
+                    FieldType::Binary => 9,
+                    FieldType::String => 1,
+                };
+                (
+                    &self.reader.buf[f.start..(f.start + f.namelen)],
+                    &self.reader.buf[(f.start + f.namelen + bin_offset)..field_stop],
+                    f.typ.clone(),
+                )
+            });
             self.index += 1;
             res
         }
@@ -354,10 +353,11 @@ pub mod sync {
             }
         }
 
-        pub fn parse_next(&mut self) -> Result<JournalEntry<'_>, JournalExportReadError> {
+        pub fn parse_next(&mut self) -> Result<(), JournalExportReadError> {
+            self.parse_state.clear_entry();
             loop {
                 match self.parse_state.parse() {
-                    BufferState::Result(Ok(())) => break,
+                    BufferState::Result(Ok(())) => return Ok(()),
                     BufferState::Result(Err(e)) => return Err::<_, JournalExportReadError>(e),
                     BufferState::Underfilled(b) => {
                         let n = self.buf_read.read(b)?;
@@ -368,8 +368,10 @@ pub mod sync {
                     }
                 }
             }
+        }
 
-            Ok(self.parse_state.get_entry())
+        pub fn get_entry(&self) -> JournalEntry<'_> {
+            self.parse_state.get_entry()
         }
     }
 }
@@ -388,10 +390,11 @@ impl<R: AsyncRead + Unpin> JournalExportAsyncRead<R> {
         }
     }
 
-    pub async fn parse_next(&mut self) -> Result<JournalEntry<'_>, JournalExportReadError> {
+    pub async fn parse_next(&mut self) -> Result<(), JournalExportReadError> {
+        self.parse_state.clear_entry();
         loop {
             match self.parse_state.parse() {
-                BufferState::Result(Ok(())) => return Ok(self.parse_state.get_entry()),
+                BufferState::Result(Ok(())) => return Ok(()),
                 BufferState::Result(Err(e)) => return Err::<_, JournalExportReadError>(e),
                 BufferState::Underfilled(b) => {
                     let n = self.buf_read.read(b).await?;
@@ -402,6 +405,10 @@ impl<R: AsyncRead + Unpin> JournalExportAsyncRead<R> {
                 }
             }
         }
+    }
+
+    pub fn get_entry(&self) -> JournalEntry<'_> {
+        self.parse_state.get_entry()
     }
 }
 
@@ -441,7 +448,8 @@ mod tests {
 
             loop {
                 match export_read.parse_next() {
-                    Ok(i) => {
+                    Ok(_) => {
+                        let i = export_read.get_entry();
                         let mut found_cursor = false;
                         for (name, _content, _typ) in i {
                             let name = String::from_utf8_lossy(name);
