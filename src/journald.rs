@@ -1,13 +1,33 @@
-//
+//! Parse a journal entries given in the Journal Export Format.
+//!
+//! The structure is optimized for situations where the journal entry is
+//! immediately 'reduced' for further processed; for example, for most
+//! applications, most of the fields are ignored or their representation changes
+//! based on the type. It'd thus be wasteful to create heap-allocated objects
+//! for each entry or even field upfront.
+//!
+//! The journal entries are read into a buffer whose size is only increased (by
+//! the initial buffer size) if a single entry is larger than the current buffer
+//! size. Currently, there is no mechanism to decrease the buffer size
+//! again; such an extensions might be of interest in networking applications.
+//!
+//! [parser::JournalExportParseBuffer] manages the buffer and corresponding
+//! parser state. It is separated out from I/O-related code:
+//! [JournalExportAsyncRead] and [sync::JournalExportRead] provide async and
+//! sync versions of a parser.
 
 use thiserror::Error;
+
+use self::parser::{BufferState, JournalExportParseBuffer};
+pub use self::{parser::JournalEntry, sync::JournalExportRead};
+use futures::{AsyncRead, AsyncReadExt};
 
 // We assume that 16KiB (half L1 cache on modern CPUs) is enough to hold at
 // least one Journal Entry.
 const DEFAULT_BUF_SIZE: usize = 4096 * 4;
 
 pub mod parser {
-    use super::JournaldReadError;
+    use super::JournalExportReadError;
 
     pub struct JournalExportParseBuffer {
         buf: Vec<u8>,
@@ -96,14 +116,14 @@ pub mod parser {
             self.free()
         }
 
-        //
+        #[inline]
         pub fn parse(&mut self) -> BufferState<()> {
             loop {
                 if self.cur_pos == self.buf_stop {
                     if !matches!(self.parse_state, ParserState::EntryStart) {
                         return BufferState::Underfilled(self.cycle_buffer());
                     } else {
-                        return self.close_on_err(Err(JournaldReadError::Eof));
+                        return self.close_on_err(Err(JournalExportReadError::Eof));
                     }
                 }
 
@@ -119,7 +139,7 @@ pub mod parser {
                             ParserState::Fieldname
                         } else {
                             return self
-                                .close_on_err(Err(JournaldReadError::UnexpectedCharacter(c)));
+                                .close_on_err(Err(JournalExportReadError::UnexpectedCharacter(c)));
                         }
                     }
                     FieldStart => match c {
@@ -129,8 +149,9 @@ pub mod parser {
                                 self.parse_state = ParserState::EntryStart;
                                 return BufferState::Result(Ok(()));
                             } else {
-                                return self
-                                    .close_on_err(Err(JournaldReadError::UnexpectedCharacter(c)));
+                                return self.close_on_err(Err(
+                                    JournalExportReadError::UnexpectedCharacter(c),
+                                ));
                             }
                         }
                         c if (c.is_ascii_alphanumeric() || c == b'_') => {
@@ -140,7 +161,8 @@ pub mod parser {
                             res
                         }
                         c => {
-                            return self.close_on_err(JournaldReadError::invalid_fieldname_char(c));
+                            return self
+                                .close_on_err(JournalExportReadError::invalid_fieldname_char(c));
                         }
                     },
                     Fieldname => {
@@ -153,8 +175,9 @@ pub mod parser {
                                 ParserState::Fieldname
                             }
                             _ => {
-                                return self
-                                    .close_on_err(Err(JournaldReadError::UnexpectedCharacter(c)))
+                                return self.close_on_err(Err(
+                                    JournalExportReadError::UnexpectedCharacter(c),
+                                ))
                             }
                         };
                         self.cur_pos += 1;
@@ -184,8 +207,9 @@ pub mod parser {
                         } else {
                             c = self.buf[self.cur_pos];
                             if c != b'\n' {
-                                return self
-                                    .close_on_err(Err(JournaldReadError::UnexpectedCharacter(c)));
+                                return self.close_on_err(Err(
+                                    JournalExportReadError::UnexpectedCharacter(c),
+                                ));
                             }
                             self.cur_pos += 1;
                             self.field_offsets.push(FieldOffset {
@@ -209,21 +233,21 @@ pub mod parser {
                             ParserState::StringField
                         }
                     }
-                    Eof => return BufferState::Result(Err(JournaldReadError::Eof)),
+                    Eof => return BufferState::Result(Err(JournalExportReadError::Eof)),
                 }
             }
         }
 
-        pub fn get_entry(&mut self) -> impl Iterator<Item = (&[u8], &[u8], FieldType)> {
+        pub fn get_entry(&mut self) -> JournalEntry<'_> {
             std::mem::swap(&mut self.field_offsets, &mut self.completed_field_offsets);
             self.field_offsets.clear();
-            FieldIterator {
+            JournalEntry {
                 index: 0,
                 reader: self,
             }
         }
 
-        fn close_on_err<T>(&mut self, r: Result<T, JournaldReadError>) -> BufferState<T> {
+        fn close_on_err<T>(&mut self, r: Result<T, JournalExportReadError>) -> BufferState<T> {
             match r {
                 Err(e) => {
                     self.parse_state = ParserState::Eof;
@@ -235,7 +259,7 @@ pub mod parser {
     }
 
     pub enum BufferState<'a, T> {
-        Result(Result<T, JournaldReadError>),
+        Result(Result<T, JournalExportReadError>),
         Underfilled(&'a mut [u8]),
     }
 
@@ -249,12 +273,19 @@ pub mod parser {
         Eof,
     }
 
-    struct FieldIterator<'a> {
+    pub struct JournalEntry<'a> {
         index: usize,
         reader: &'a JournalExportParseBuffer,
     }
 
-    impl<'a> Iterator for FieldIterator<'a> {
+    impl<'a> JournalEntry<'a> {
+        pub fn as_bytes(&self) -> &'a [u8] {
+            let start = self.reader.completed_field_offsets[0].start;
+            &self.reader.buf[start..self.reader.cur_pos]
+        }
+    }
+
+    impl<'a> Iterator for JournalEntry<'a> {
         type Item = (&'a [u8], &'a [u8], FieldType);
 
         fn next(&mut self) -> Option<Self::Item> {
@@ -304,18 +335,18 @@ pub mod parser {
 
 pub mod sync {
     use super::{
-        parser::{BufferState, FieldType, JournalExportParseBuffer},
-        JournaldReadError, DEFAULT_BUF_SIZE,
+        parser::{BufferState, JournalEntry, JournalExportParseBuffer},
+        JournalExportReadError, DEFAULT_BUF_SIZE,
     };
     use std::io::Read;
 
-    pub struct BufJournalExportRead<R> {
+    pub struct JournalExportRead<R> {
         buf_read: R,
         parse_state: JournalExportParseBuffer,
     }
 
     /// Read journal entries into a memory buffer which has at most
-    impl<R: Read> BufJournalExportRead<R> {
+    impl<R: Read> JournalExportRead<R> {
         pub fn new(buf_read: R) -> Self {
             Self {
                 buf_read,
@@ -323,17 +354,15 @@ pub mod sync {
             }
         }
 
-        pub fn parse_next(
-            &mut self,
-        ) -> Result<impl Iterator<Item = (&[u8], &[u8], FieldType)>, JournaldReadError> {
+        pub fn parse_next(&mut self) -> Result<JournalEntry<'_>, JournalExportReadError> {
             loop {
                 match self.parse_state.parse() {
                     BufferState::Result(Ok(())) => break,
-                    BufferState::Result(Err(e)) => return Err::<_, JournaldReadError>(e),
+                    BufferState::Result(Err(e)) => return Err::<_, JournalExportReadError>(e),
                     BufferState::Underfilled(b) => {
                         let n = self.buf_read.read(b)?;
                         if n == 0 {
-                            return Err(JournaldReadError::UnexpectedEof);
+                            return Err(JournalExportReadError::UnexpectedEof);
                         }
                         self.parse_state.advance(n);
                     }
@@ -345,8 +374,39 @@ pub mod sync {
     }
 }
 
+pub struct JournalExportAsyncRead<R> {
+    buf_read: R,
+    parse_state: JournalExportParseBuffer,
+}
+
+/// Read journal entries into a memory buffer which has at most
+impl<R: AsyncRead + Unpin> JournalExportAsyncRead<R> {
+    pub fn new(buf_read: R) -> Self {
+        Self {
+            buf_read,
+            parse_state: JournalExportParseBuffer::new(DEFAULT_BUF_SIZE),
+        }
+    }
+
+    pub async fn parse_next(&mut self) -> Result<JournalEntry<'_>, JournalExportReadError> {
+        loop {
+            match self.parse_state.parse() {
+                BufferState::Result(Ok(())) => return Ok(self.parse_state.get_entry()),
+                BufferState::Result(Err(e)) => return Err::<_, JournalExportReadError>(e),
+                BufferState::Underfilled(b) => {
+                    let n = self.buf_read.read(b).await?;
+                    if n == 0 {
+                        return Err(JournalExportReadError::UnexpectedEof);
+                    }
+                    self.parse_state.advance(n);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Error, Debug)]
-pub enum JournaldReadError {
+pub enum JournalExportReadError {
     #[error("IO error occured.")]
     IoError(#[from] std::io::Error),
     #[error("Unexpected character")]
@@ -357,7 +417,7 @@ pub enum JournaldReadError {
     UnexpectedEof,
 }
 
-impl JournaldReadError {
+impl JournalExportReadError {
     fn invalid_fieldname_char<T>(c: u8) -> Result<T, Self> {
         Err(Self::UnexpectedCharacter(c))
     }
@@ -367,7 +427,7 @@ impl JournaldReadError {
 mod tests {
     use std::fs::OpenOptions;
 
-    use super::{sync::BufJournalExportRead, JournaldReadError};
+    use super::{JournalExportRead, JournalExportReadError};
 
     #[test]
     fn can_parse_host_files() -> Result<(), Box<dyn std::error::Error + 'static>> {
@@ -377,7 +437,7 @@ mod tests {
         for fpath in test_files {
             let f = OpenOptions::new().read(true).open(fpath)?;
 
-            let mut export_read = BufJournalExportRead::new(f);
+            let mut export_read = JournalExportRead::new(f);
 
             loop {
                 match export_read.parse_next() {
@@ -393,7 +453,7 @@ mod tests {
                         }
                         assert!(found_cursor);
                     }
-                    Err(JournaldReadError::Eof | JournaldReadError::UnexpectedEof) => {
+                    Err(JournalExportReadError::Eof | JournalExportReadError::UnexpectedEof) => {
                         break;
                     }
                     Err(e) => {
