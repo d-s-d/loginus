@@ -1,20 +1,23 @@
 //! Parse a journal entries given in the Journal Export Format.
 //!
-//! The structure is optimized for situations where the journal entry is
-//! immediately 'reduced' for further processed; for example, for most
+//! [parser::JournalExportParseBuffer] contains the parser logic and manages the
+//! buffer. The [JournalExportAsyncRead] and [sync::JournalExportRead] provide
+//! async and sync versions of a parser.
+//!
+//! ## Parser and buffer management
+//!
+//! The parser is optimized for situations where the journal entry is
+//! immediately 'reduced' for further processing; for example, for most
 //! applications, most of the fields are ignored or their representation changes
-//! based on the type. It'd thus be wasteful to create heap-allocated objects
-//! for each entry or even field upfront.
+//! based on the type (for a simple example, integers are parsed). It'd thus be
+//! wasteful to create heap-allocated objects for each entry or even field
+//! upfront containing the raw representation of the field.
 //!
 //! The journal entries are read into a buffer whose size is only increased (by
 //! the initial buffer size) if a single entry is larger than the current buffer
 //! size. Currently, there is no mechanism to decrease the buffer size
-//! again; such an extensions might be of interest in networking applications.
-//!
-//! [parser::JournalExportParseBuffer] manages the buffer and corresponding
-//! parser state. It is separated out from I/O-related code:
-//! [JournalExportAsyncRead] and [sync::JournalExportRead] provide async and
-//! sync versions of a parser.
+//! again; such an extensions might be of interest in networking applications
+//! that consume data from potentially untrustworthy sources.
 
 use thiserror::Error;
 
@@ -27,113 +30,65 @@ use futures::{AsyncRead, AsyncReadExt};
 const DEFAULT_BUF_SIZE: usize = 4096 * 4;
 
 pub mod parser {
+    use crate::shiftbuffer::{Pointer, ShiftBuffer};
+
     use super::JournalExportReadError;
 
     pub struct JournalExportParseBuffer {
-        buf: Vec<u8>,
-        buf_page_size: usize,
-
-        // buffer state
-        entry_start: usize,
-        cur_pos: usize,
-        buf_stop: usize,
-
-        // parser state
-        field_start: usize,
+        buf: ShiftBuffer<u8>,
+        entry_start: Pointer,
+        field_start: Pointer,
+        cursor: Pointer,
         namelen: usize,
         remaining: u64,
         parse_state: ParserState,
-
         field_offsets: Vec<FieldOffset>,
     }
 
     impl JournalExportParseBuffer {
         pub fn new(buf_size: usize) -> Self {
+            let buf = ShiftBuffer::new(buf_size);
+            let entry_start = buf.lower();
+            let field_start = entry_start;
+            let cursor = entry_start;
             Self {
-                buf: vec![0; buf_size],
-                buf_page_size: buf_size,
-
-                entry_start: 0,
-                cur_pos: 0,
-                field_start: 0,
+                buf,
+                entry_start,
+                field_start,
+                cursor,
                 namelen: 0,
                 remaining: 0,
-                buf_stop: 0,
-
                 parse_state: ParserState::FieldStart,
                 field_offsets: vec![],
             }
         }
 
-        pub fn free(&mut self) -> &mut [u8] {
-            &mut self.buf[self.buf_stop..]
-        }
-
-        pub fn advance(&mut self, n: usize) {
-            assert!(n <= self.buf.len() - self.buf_stop);
-            self.buf_stop += n;
-        }
-
-        // cycle_buffer performs one of two actions:
-        //
-        // If the stop position is at the end of the buffer and the entry starts at
-        // position 0 (the buffer is too small to hold the current entry), the
-        // buffer is extended.
-        //
-        // Otherwise, the buffer is 'shifted'; i.e. the content from the current
-        // starting position is moved to the beginning of the buffer. Additionally,
-        // all existing parser states are shifted as well as the offset relative to
-        // the start of the buffer changed.
-        //
-        // In either case, a reference to a slice is returned that covers the unused
-        // remainder of the buffer. The slice is guaranteed to have non-zero size.
-        //
-        // # Postcondition
-        // `prev(buf_stop) - prev(entry_start) <= buf_stop - entry_start`
-        #[inline]
-        pub fn cycle_buffer(&mut self) -> &mut [u8] {
-            if self.buf_stop == self.buf.len() {
-                if self.field_start == 0 {
-                    // increase buffer size
-                    self.buf.extend((0..self.buf_page_size).map(|_| 0u8))
-                } else {
-                    // shift all existing entries
-                    for s in self.field_offsets.iter_mut() {
-                        s.shift(self.entry_start);
-                    }
-                    // shift buffer
-                    for p in 0..(self.buf_stop - self.entry_start) {
-                        self.buf[p] = self.buf[p + self.entry_start]
-                    }
-                    self.cur_pos -= self.entry_start;
-                    self.buf_stop -= self.entry_start;
-                    self.field_start -= self.entry_start;
-                    self.entry_start = 0;
-                }
-            }
-            self.free()
+        pub fn extend(&mut self, n: usize) {
+            self.buf.extend(n);
         }
 
         #[inline]
         pub fn parse(&mut self) -> BufferState<()> {
             loop {
-                if self.cur_pos == self.buf_stop {
-                    if matches!(self.parse_state, ParserState::EntryStart) {
-                        return BufferState::UnderfilledEntryStart(self.cycle_buffer());
-                    } else {
-                        return BufferState::Underfilled(self.cycle_buffer());
+                // If there is no space left
+                if self.cursor == self.buf.upper() {
+                    match self.parse_state {
+                        ParserState::EntryStart => {
+                            return BufferState::UnderfilledEntryStart(self.buf.make_room())
+                        }
+                        _ => return BufferState::Underfilled(self.buf.make_room()),
                     }
                 }
 
-                let mut c = self.buf[self.cur_pos];
+                let mut c = self.buf[self.cursor];
 
                 use ParserState::*;
                 self.parse_state = match self.parse_state {
                     EntryStart => {
                         if c.is_ascii_alphanumeric() || c == b'_' {
-                            self.entry_start = self.cur_pos;
-                            self.field_start = self.cur_pos;
-                            self.cur_pos += 1;
+                            self.entry_start = self.cursor;
+                            self.field_start = self.entry_start;
+                            self.cursor += 1;
                             ParserState::Fieldname
                         } else {
                             return self
@@ -143,7 +98,7 @@ pub mod parser {
                     FieldStart => match c {
                         b'\n' => {
                             if !self.field_offsets.is_empty() {
-                                self.cur_pos += 1;
+                                self.cursor += 1;
                                 self.parse_state = ParserState::EntryStart;
                                 return BufferState::Result(Ok(()));
                             } else {
@@ -153,10 +108,9 @@ pub mod parser {
                             }
                         }
                         c if (c.is_ascii_alphanumeric() || c == b'_') => {
-                            self.field_start = self.cur_pos;
-                            let res = ParserState::Fieldname;
-                            self.cur_pos += 1;
-                            res
+                            self.field_start = self.cursor;
+                            self.cursor += 1;
+                            ParserState::Fieldname
                         }
                         c => {
                             return self
@@ -164,9 +118,9 @@ pub mod parser {
                         }
                     },
                     Fieldname => {
-                        let start = self.field_start;
-                        self.namelen = self.cur_pos - start;
-                        let res = match c {
+                        self.namelen = self.cursor - self.field_start;
+                        self.cursor += 1;
+                        match c {
                             b'=' => ParserState::StringField,
                             b'\n' => ParserState::BinaryValueLen,
                             c_ if c_.is_ascii_alphanumeric() || c_ == b'_' => {
@@ -177,16 +131,14 @@ pub mod parser {
                                     JournalExportReadError::UnexpectedCharacter(c),
                                 ))
                             }
-                        };
-                        self.cur_pos += 1;
-                        res
+                        }
                     }
                     BinaryValueLen => {
                         // [fieldname]  '\n'  [64bit le integer]
                         // <-namelen-> +  1 + <----8 bytes----->
                         let len_stop = self.field_start + self.namelen + 9;
-                        self.cur_pos = self.buf_stop.min(len_stop);
-                        if self.cur_pos < len_stop || self.cur_pos == self.buf_stop {
+                        self.cursor = self.buf.upper().min(len_stop);
+                        if self.cursor < len_stop || self.cursor == self.buf.upper() {
                             ParserState::BinaryValueLen
                         } else {
                             let mut le_bytes = [0u8; 8];
@@ -199,17 +151,17 @@ pub mod parser {
                     BinaryValue => {
                         let stop_pos =
                             self.field_start + self.namelen + 9 + self.remaining as usize;
-                        self.cur_pos = self.buf_stop.min(stop_pos);
-                        if self.cur_pos < stop_pos || self.cur_pos == self.buf_stop {
+                        self.cursor = self.buf.upper().min(stop_pos);
+                        if self.cursor < stop_pos || self.cursor == self.buf.upper() {
                             ParserState::BinaryValue
                         } else {
-                            c = self.buf[self.cur_pos];
+                            c = self.buf[self.cursor];
                             if c != b'\n' {
                                 return self.close_on_err(Err(
                                     JournalExportReadError::UnexpectedCharacter(c),
                                 ));
                             }
-                            self.cur_pos += 1;
+                            self.cursor += 1;
                             self.field_offsets.push(FieldOffset {
                                 start: self.field_start,
                                 namelen: self.namelen,
@@ -219,7 +171,7 @@ pub mod parser {
                         }
                     }
                     StringField => {
-                        self.cur_pos += 1;
+                        self.cursor += 1;
                         if c == b'\n' {
                             self.field_offsets.push(FieldOffset {
                                 start: self.field_start,
@@ -285,7 +237,7 @@ pub mod parser {
     impl<'a> JournalEntry<'a> {
         pub fn as_bytes(&self) -> &'a [u8] {
             let start = self.reader.field_offsets[0].start;
-            &self.reader.buf[start..self.reader.cur_pos]
+            &self.reader.buf[start..self.reader.cursor]
         }
     }
 
@@ -296,7 +248,7 @@ pub mod parser {
             let field_stop = if self.index + 1 < self.reader.field_offsets.len() {
                 self.reader.field_offsets[self.index + 1].start - 1
             } else {
-                self.reader.cur_pos - 2
+                self.reader.cursor - 2
             };
             let res = self.reader.field_offsets.get(self.index).map(|f| {
                 let bin_offset = match &f.typ {
@@ -321,15 +273,9 @@ pub mod parser {
     }
 
     struct FieldOffset {
-        start: usize,
+        start: Pointer,
         namelen: usize,
         typ: FieldType,
-    }
-
-    impl FieldOffset {
-        fn shift(&mut self, amount: usize) {
-            self.start -= amount;
-        }
     }
 }
 
@@ -367,14 +313,14 @@ pub mod sync {
                         if n == 0 {
                             return Err(JournalExportReadError::UnexpectedEof);
                         }
-                        self.parse_state.advance(n);
+                        self.parse_state.extend(n);
                     }
                     BufferState::UnderfilledEntryStart(b) => {
                         let n = self.buf_read.read(b)?;
                         if n == 0 {
                             return Err(JournalExportReadError::Eof);
                         }
-                        self.parse_state.advance(n);
+                        self.parse_state.extend(n);
                     }
                 }
             }
@@ -411,14 +357,14 @@ impl<R: AsyncRead + Unpin> JournalExportAsyncRead<R> {
                     if n == 0 {
                         return Err(JournalExportReadError::UnexpectedEof);
                     }
-                    self.parse_state.advance(n);
+                    self.parse_state.extend(n);
                 }
                 BufferState::UnderfilledEntryStart(b) => {
                     let n = self.buf_read.read(b).await?;
                     if n == 0 {
                         return Err(JournalExportReadError::Eof);
                     }
-                    self.parse_state.advance(n);
+                    self.parse_state.extend(n);
                 }
             }
         }
