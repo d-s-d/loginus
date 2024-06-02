@@ -1,6 +1,55 @@
-//! A fixed size buffer
+//! Operate on the tail of a data stream that is managed using a buffer of
+//! limited size.
+//!
+//! A [ShiftBuffer] enables pointer arithmetics on data that is occasionally
+//! 'shifted'; i.e. the data is being moved to the beginning of the buffer to
+//! retain its size while allowing for further data to be read into the buffer.
+//! To that end, [ShiftBuffer] maintains a sliding window which can be exteded
+//! (the upper end moves up) or shrunk (the lower end moves up). To access the
+//! data within the window, the buffer can be indexed using a [Pointer].
+//!
+//! Typically, this is used in a scenario where one wants to operate on the tail
+//! of a continuous data stream while only allocating a fixed buffer. Whenever
+//! the buffer is 'shifted', it is conceptually moved forward in the data
+//! stream.
+//!
+//! The following is an illustration of the state before and after a shift.
+//! Here, the cursor is a pointer into the window. Technically, a pointer
+//! retains its position within the original data stream. We call this position
+//! 'absolute' and it can be revealed with [Pointer::abs].
+//!
+//! ```text
+//!         |<----------- buffer ----------->|
+//!         |     |<----- window ----->|
+//!                           ^
+//!                           |
+//! ~~ data stream ~~~~~~~~[Cursor]~~~~~
+//!                           |
+//!                           v
+//!               |<----------- buffer ----------->|
+//!               |<----- window ----->|<- free -->|
+//!
+//! ```
+//!
+//! Following the illustration above, this is the state after the window has
+//! been extended:
+//!
+//! ```text
+//! ~~ data stream ~~~~~~~~[Cursor]~~~~~~~~~~
+//!                           |
+//!                           v
+//!               |<----------- buffer ----------->|
+//!               |<------- window --------->|< f >|
+//! ```
+//!
+//! In a typical scenario, one would call [ShiftBuffer::make_room] whenever more
+//! data needs to be read into the buffer. This method either shifts the window
+//! or doubles the buffer size, depending on whether the window currently covers
+//! the entire buffer or not.
+//!
+//!
 
-use std::ops::{Add, AddAssign, Index, Range, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Index, IndexMut, Range, Sub, SubAssign};
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy, Default)]
 pub struct Pointer(usize);
@@ -71,13 +120,13 @@ impl<T: Default + Copy> ShiftBuffer<T> {
 
     /// Moves the lower end of the window by `n`.
     pub fn shrink(&mut self, n: usize) -> Pointer {
-        debug_assert!(self.lower + n < self.upper);
+        assert!(self.lower + n < self.upper);
         self.lower += n;
         self.lower
     }
 
     pub fn extend(&mut self, n: usize) -> Pointer {
-        debug_assert!(self.relative_pos(self.upper) + n <= self.buf.len());
+        assert!(self.relative_pos(self.upper) + n <= self.buf.len());
         self.upper += n;
         self.upper
     }
@@ -141,6 +190,14 @@ impl<T: Default + Copy> Index<Pointer> for ShiftBuffer<T> {
     }
 }
 
+impl<T: Default + Copy> IndexMut<Pointer> for ShiftBuffer<T> {
+    fn index_mut(&mut self, index: Pointer) -> &mut Self::Output {
+        debug_assert!(self.lower <= index && index <= self.upper);
+        let r = self.relative_pos(index);
+        &mut self.buf[r]
+    }
+}
+
 impl<T: Default + Copy> Index<Range<Pointer>> for ShiftBuffer<T> {
     type Output = [T];
 
@@ -149,5 +206,25 @@ impl<T: Default + Copy> Index<Range<Pointer>> for ShiftBuffer<T> {
         debug_assert!(self.lower <= r.start && r.start <= self.upper);
         debug_assert!(self.lower <= r.end && r.end <= self.upper);
         &self.buf[self.relative_pos(r.start)..self.relative_pos(r.end)]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShiftBuffer;
+
+    #[test]
+    fn store_simple_string() {
+        let input_string = "ABC";
+        let mut sbuf = ShiftBuffer::<u8>::new(1 << 10);
+        let (lower, upper) = (sbuf.lower(), sbuf.extend(3));
+
+        let mut cursor = lower;
+        for b in input_string.as_bytes() {
+            sbuf[cursor] = *b;
+            cursor += 1;
+        }
+
+        assert_eq!(&sbuf[lower..upper], input_string.as_bytes());
     }
 }

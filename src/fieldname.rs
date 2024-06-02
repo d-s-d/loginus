@@ -157,6 +157,90 @@ pub enum Known {
     __SeqnumId,
 }
 
+impl Known {
+    pub fn as_bytes(&self) -> &'static [u8] {
+        match self {
+            // User Fields
+            // https://www.freedesktop.org/software/systemd/man/254/systemd.journal-fields.html#User%20Journal%20Fields
+            Known::Message => b"MESSAGE",
+            Known::MessageId => b"MESSAGE_ID",
+            Known::Priority => b"PRIORITY",
+            Known::CodeFile => b"CODE_FILE",
+            Known::CodeLine => b"CODE_LINE",
+            Known::CodeFunc => b"CODE_FUNC",
+            Known::Errno => b"ERRNO",
+            Known::InvocationId => b"INVOCATION_ID",
+            Known::UserInvocationId => b"USER_INVOCATION_ID",
+            Known::SyslogFacility => b"SYSLOG_FACILITY",
+            Known::SyslogIdentifier => b"SYSLOG_IDENTIFIER",
+            Known::SyslogPid => b"SYSLOG_PID",
+            Known::SyslogTimestamp => b"SYSLOG_TIMESTAMP",
+            Known::SyslogRaw => b"SYSLOG_RAW",
+            Known::Documentation => b"DOCUMENTATION",
+            Known::Tid => b"TID",
+            Known::Unit => b"UNIT",
+            Known::UserUnit => b"USER_UNIT",
+            // Trusted Journal Fields
+            // https://www.freedesktop.org/software/systemd/man/254/systemd.journal-fields.html#User%20Journal%20Fields
+            Known::_Pid => b"_PID",
+            Known::_Uid => b"_UID",
+            Known::_Gid => b"_GID",
+            Known::_Comm => b"_COMM",
+            Known::_Exe => b"_EXE",
+            Known::_Cmdline => b"_CMDLINE",
+            Known::_CapEffective => b"_CAP_EFFECTIVE",
+            Known::_AuditSession => b"_AUDIT_SESSION",
+            Known::_AuditLoginuid => b"_AUDIT_LOGINUID",
+            Known::_SystemdCgroup => b"_SYSTEMD_CGROUP",
+            Known::_SystemdSlice => b"_SYSTEMD_SLICE",
+            Known::_SystemdUnit => b"_SYSTEMD_UNIT",
+            Known::_SystemdUserUnit => b"_SYSTEMD_USER_UNIT",
+            Known::_SystemdUserSlice => b"_SYSTEMD_USER_SLICE",
+            Known::_SystemdSession => b"_SYSTEMD_SESSION",
+            Known::_SystemdOwnerUid => b"_SYSTEMD_OWNER_UID",
+            Known::_SelinuxContext => b"_SELINUX_CONTEXT",
+            Known::_SourceRealtimeTimestamp => b"_SOURCE_REALTIME_TIMESTAMP",
+
+            Known::_BootId => b"_BOOT_ID",
+            Known::_MachineId => b"_MACHINE_ID",
+            Known::_SystemdInvocationId => b"_SYSTEMD_INVOCATION_ID",
+            Known::_Hostname => b"_HOSTNAME",
+            Known::_Transport => b"_TRANSPORT",
+            Known::_StreamId => b"_STREAM_ID",
+            Known::_LineBreak => b"_LINE_BREAK",
+            Known::_Namespace => b"_NAMESPACE",
+            Known::_RuntimeScope => b"_RUNTIME_SCOPE",
+
+            // Kernel Journal Fields
+            Known::_KernelDevice => b"_KERNEL_DEVICE",
+            Known::_KernelSubsystem => b"_KERNEL_SUBSYSTEM",
+            Known::_UdevSysname => b"_UDEV_SYSNAME",
+            Known::_UdevDevnode => b"_UDEV_DEVNODE",
+            Known::_UdevDevlink => b"_UDEV_DEVLINK",
+            Known::CoredumpUnit => b"COREDUMP_UNIT",
+            Known::CoredumpUserUnit => b"COREDUMP_USER_UNIT",
+            Known::ObjectPid => b"OBJECT_PID",
+            Known::ObjectUid => b"OBJECT_UID",
+            Known::ObjectGid => b"OBJECT_GID",
+            Known::ObjectComm => b"OBJECT_COMM",
+            Known::ObjectExe => b"OBJECT_EXE",
+            Known::ObjectCmdline => b"OBJECT_CMDLINE",
+            Known::ObjectAuditSession => b"OBJECT_AUDIT_SESSION",
+            Known::ObjectAuditLoginuid => b"OBJECT_AUDIT_LOGINUID",
+            Known::ObjectSystemdCgroup => b"OBJECT_SYSTEMD_CGROUP",
+            Known::ObjectSystemdSession => b"OBJECT_SYSTEMD_SESSION",
+            Known::ObjectSystemdOwnerUid => b"OBJECT_SYSTEMD_OWNER_UID",
+            Known::ObjectSystemdUnit => b"OBJECT_SYSTEMD_UNIT",
+            Known::ObjectSystemdUserUnit => b"OBJECT_SYSTEMD_USER_UNIT",
+            Known::__Cursor => b"__CURSOR",
+            Known::__RealtimeTimestamp => b"__REALTIME_TIMESTAMP",
+            Known::__MonotonicTimestamp => b"__MONOTONIC_TIMESTAMP",
+            Known::__Seqnum => b"__SEQNUM",
+            Known::__SeqnumId => b"__SEQNUM_ID",
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum Fieldname<'a> {
     Known(Known),

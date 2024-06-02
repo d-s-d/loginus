@@ -1,4 +1,4 @@
-//! Parse a journal entries given in the Journal Export Format.
+//! Parse a journal entries in the Journal Export Format.
 //!
 //! [parser::JournalExportParseBuffer] contains the parser logic and manages the
 //! buffer. The [JournalExportAsyncRead] and [sync::JournalExportRead] provide
@@ -70,7 +70,8 @@ pub mod parser {
         #[inline]
         pub fn parse(&mut self) -> BufferState<()> {
             loop {
-                // If there is no space left
+                // If the cursor reached the upper end of the window, ask for
+                // more byte from the user.
                 if self.cursor == self.buf.upper() {
                     match self.parse_state {
                         ParserState::EntryStart => {
@@ -245,10 +246,16 @@ pub mod parser {
         type Item = (&'a [u8], &'a [u8], FieldType);
 
         fn next(&mut self) -> Option<Self::Item> {
-            let field_stop = if self.index + 1 < self.reader.field_offsets.len() {
-                self.reader.field_offsets[self.index + 1].start - 1
-            } else {
+            let field_stop = if self.index == self.reader.field_offsets.len() {
+                // The cursor points to the first byte of the next entry. Thus,
+                // cursor-2 points to the first NL after the last field of this
+                // entry.
                 self.reader.cursor - 2
+            } else {
+                // The fields are separated by one NL character, therefore
+                // .start-1 of the next field points to the NL character that
+                // terminates this field.
+                self.reader.field_offsets[self.index + 1].start - 1
             };
             let res = self.reader.field_offsets.get(self.index).map(|f| {
                 let bin_offset = match &f.typ {
@@ -401,7 +408,10 @@ mod tests {
 
     #[test]
     fn can_parse_host_files() -> Result<(), Box<dyn std::error::Error + 'static>> {
-        let test_files = std::env::var("JOURNALD_TESTFILES").unwrap_or_default();
+        let test_files = match std::env::var("JOURNALD_TESTFILES") {
+            Ok(v) => v,
+            Err(_) => return Ok(()),
+        };
         let test_files: Vec<_> = test_files.split(',').collect();
 
         for fpath in test_files {
@@ -426,12 +436,10 @@ mod tests {
                         assert!(found_cursor);
                         count += 1;
                     }
-                    Err(JournalExportReadError::Eof | JournalExportReadError::UnexpectedEof) => {
-                        break;
-                    }
+                    Err(JournalExportReadError::Eof) => break,
                     Err(e) => {
                         println!("{:?}", e);
-                        break;
+                        panic!("{:?}", e);
                     }
                 }
             }
