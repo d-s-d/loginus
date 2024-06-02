@@ -46,8 +46,6 @@
 //! data needs to be read into the buffer. This method either shifts the window
 //! or doubles the buffer size, depending on whether the window currently covers
 //! the entire buffer or not.
-//!
-//!
 
 use std::ops::{Add, AddAssign, Index, IndexMut, Range, Sub, SubAssign};
 
@@ -176,8 +174,9 @@ impl<T: Default + Copy> ShiftBuffer<T> {
         self.upper
     }
 
-    fn relative_pos(&self, p: Pointer) -> usize {
-        p.abs() - self.offset.abs()
+    pub fn relative_pos(&self, p: Pointer) -> usize {
+        debug_assert!(self.lower <= p && p <= self.upper);
+        p - self.offset
     }
 }
 

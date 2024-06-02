@@ -1,3 +1,7 @@
+//! Parse (known) field names of journald-entries.
+//!
+//! See: [systemd.journal-fields](https://www.freedesktop.org/software/systemd/man/254/systemd.journal-fields.html)
+
 use std::borrow::Cow;
 
 use phf::phf_map;

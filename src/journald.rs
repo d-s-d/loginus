@@ -1,8 +1,8 @@
 //! Parse a journal entries in the Journal Export Format.
 //!
-//! [parser::JournalExportParseBuffer] contains the parser logic and manages the
-//! buffer. The [JournalExportAsyncRead] and [sync::JournalExportRead] provide
-//! async and sync versions of a parser.
+//! [self::parser::JournalExportParser] contains the parser logic and manages
+//! the buffer. The [JournalExportAsyncRead] and [sync::JournalExportRead]
+//! provide async and sync versions of a parser.
 //!
 //! ## Parser and buffer management
 //!
@@ -18,11 +18,22 @@
 //! size. Currently, there is no mechanism to decrease the buffer size
 //! again; such an extensions might be of interest in networking applications
 //! that consume data from potentially untrustworthy sources.
+//!
+//! ## Implementation notes
+//!
+//! Both, [sync::JournalExportRead] and [JournalExportAsyncRead] do not
+//! implement [Iterator] or [futures::Stream] respectively. The reason is that
+//! the lifetime of the object returned from `next(&mut self)` (which is a
+//! reference in our case) must be valid for at least the lifetime of the
+//! iterator itself — not the mutable reference `&mut self`.
+//!
+//! One can make use of the iterator pattern by turning the `Entry<'_>` into an
+//! OwnedEntry.
 
 use thiserror::Error;
 
-use self::parser::{BufferState, JournalExportParseBuffer};
-pub use self::{parser::JournalEntry, sync::JournalExportRead};
+use self::parser::{BufferState, JournalExportParser};
+pub use self::{parser::Entry, sync::JournalExportRead};
 use futures::{AsyncRead, AsyncReadExt};
 
 // We assume that 16KiB (half L1 cache on modern CPUs) is enough to hold at
@@ -34,7 +45,7 @@ pub mod parser {
 
     use super::JournalExportReadError;
 
-    pub struct JournalExportParseBuffer {
+    pub struct JournalExportParser {
         buf: ShiftBuffer<u8>,
         entry_start: Pointer,
         field_start: Pointer,
@@ -45,7 +56,7 @@ pub mod parser {
         field_offsets: Vec<FieldOffset>,
     }
 
-    impl JournalExportParseBuffer {
+    impl JournalExportParser {
         pub fn new(buf_size: usize) -> Self {
             let buf = ShiftBuffer::new(buf_size);
             let entry_start = buf.lower();
@@ -190,8 +201,8 @@ pub mod parser {
         }
 
         #[inline]
-        pub fn get_entry(&self) -> JournalEntry<'_> {
-            JournalEntry {
+        pub fn get_entry(&self) -> Entry<'_> {
+            Entry {
                 index: 0,
                 reader: self,
             }
@@ -230,19 +241,19 @@ pub mod parser {
         Eof,
     }
 
-    pub struct JournalEntry<'a> {
+    pub struct Entry<'a> {
         index: usize,
-        reader: &'a JournalExportParseBuffer,
+        reader: &'a JournalExportParser,
     }
 
-    impl<'a> JournalEntry<'a> {
+    impl<'a> Entry<'a> {
         pub fn as_bytes(&self) -> &'a [u8] {
             let start = self.reader.field_offsets[0].start;
             &self.reader.buf[start..self.reader.cursor]
         }
     }
 
-    impl<'a> Iterator for JournalEntry<'a> {
+    impl<'a> Iterator for Entry<'a> {
         type Item = (&'a [u8], &'a [u8], FieldType);
 
         fn next(&mut self) -> Option<Self::Item> {
@@ -273,6 +284,10 @@ pub mod parser {
         }
     }
 
+    pub struct OwnedEntry {
+        // tbd
+    }
+
     #[derive(Clone, Debug)]
     pub enum FieldType {
         Binary,
@@ -288,14 +303,14 @@ pub mod parser {
 
 pub mod sync {
     use super::{
-        parser::{BufferState, JournalEntry, JournalExportParseBuffer},
+        parser::{BufferState, Entry, JournalExportParser},
         JournalExportReadError, DEFAULT_BUF_SIZE,
     };
     use std::io::Read;
 
     pub struct JournalExportRead<R> {
         buf_read: R,
-        parse_state: JournalExportParseBuffer,
+        parse_state: JournalExportParser,
     }
 
     /// Read journal entries into a memory buffer which has at most
@@ -303,7 +318,7 @@ pub mod sync {
         pub fn new(buf_read: R) -> Self {
             Self {
                 buf_read,
-                parse_state: JournalExportParseBuffer::new(DEFAULT_BUF_SIZE),
+                parse_state: JournalExportParser::new(DEFAULT_BUF_SIZE),
             }
         }
 
@@ -333,7 +348,7 @@ pub mod sync {
             }
         }
 
-        pub fn get_entry(&self) -> JournalEntry<'_> {
+        pub fn get_entry(&self) -> Entry<'_> {
             self.parse_state.get_entry()
         }
     }
@@ -341,7 +356,7 @@ pub mod sync {
 
 pub struct JournalExportAsyncRead<R> {
     buf_read: R,
-    parse_state: JournalExportParseBuffer,
+    parse_state: JournalExportParser,
 }
 
 /// Read journal entries into a memory buffer which has at most
@@ -349,7 +364,7 @@ impl<R: AsyncRead + Unpin> JournalExportAsyncRead<R> {
     pub fn new(buf_read: R) -> Self {
         Self {
             buf_read,
-            parse_state: JournalExportParseBuffer::new(DEFAULT_BUF_SIZE),
+            parse_state: JournalExportParser::new(DEFAULT_BUF_SIZE),
         }
     }
 
@@ -377,7 +392,7 @@ impl<R: AsyncRead + Unpin> JournalExportAsyncRead<R> {
         }
     }
 
-    pub fn get_entry(&self) -> JournalEntry<'_> {
+    pub fn get_entry(&self) -> Entry<'_> {
         self.parse_state.get_entry()
     }
 }
