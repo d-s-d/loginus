@@ -1,4 +1,4 @@
-use loginus::journald::{EntryRef, JournalExportRead, JournalExportReadError};
+use loginus::journald::{Entry, JournalExportRead, JournalExportReadError, RefEntry};
 use rand::Rng;
 use sha2::Digest;
 use std::{
@@ -151,7 +151,7 @@ fn split(out_dir: PathBuf, src: PathBuf) -> io::Result<()> {
     }
 }
 
-fn get_time_stamp(entry: EntryRef<'_>) -> u64 {
+fn get_time_stamp(entry: RefEntry<'_>) -> u64 {
     for (name, content, _) in entry.iter() {
         if name == b"__REALTIME_TIMESTAMP" {
             return String::from_utf8_lossy(content)

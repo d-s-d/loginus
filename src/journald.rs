@@ -33,17 +33,22 @@
 use thiserror::Error;
 
 use self::parser::{BufferState, JournalExportParser};
-pub use self::{parser::EntryRef, sync::JournalExportRead};
+pub use self::{parser::RefEntry, sync::JournalExportRead};
 use futures::{AsyncRead, AsyncReadExt};
 
 // We assume that 16KiB (half L1 cache on modern CPUs) is enough to hold at
 // least one Journal Entry.
 const DEFAULT_BUF_SIZE: usize = 4096 * 4;
 
+pub trait Entry {
+    fn as_bytes(&self) -> &[u8];
+    fn iter(&self) -> parser::FieldIter<'_>;
+}
+
 pub mod parser {
     use crate::shiftbuffer::{Pointer, ShiftBuffer};
 
-    use super::JournalExportReadError;
+    use super::{Entry, JournalExportReadError};
 
     pub struct JournalExportParser {
         buf: ShiftBuffer<u8>,
@@ -201,10 +206,8 @@ pub mod parser {
         }
 
         #[inline]
-        pub fn get_entry(&self) -> EntryRef<'_> {
-            EntryRef {
-                reader: self,
-            }
+        pub fn get_entry(&self) -> RefEntry<'_> {
+            RefEntry { reader: self }
         }
 
         #[inline]
@@ -240,47 +243,82 @@ pub mod parser {
         Eof,
     }
 
-    pub struct EntryRef<'a> {
+    pub struct RefEntry<'a> {
         reader: &'a JournalExportParser,
     }
 
-    pub trait Entry<'a> {
-        fn as_bytes(&self) -> &'a [u8];
-        fn iter(&'a self) -> FieldIter<'a>;
+    impl<'a> RefEntry<'a> {
+        pub fn to_owned(&self) -> OwnedEntry {
+            OwnedEntry {
+                cursor: self.reader.cursor,
+                buf: self.reader.buf.clone_window(),
+                offsets: self.reader.field_offsets.to_vec()
+            }
+        }
     }
 
-    impl<'a> EntryRef<'a> {
-        pub fn as_bytes(&self) -> &'a [u8] {
+    impl<'a> Entry for RefEntry<'a> {
+        fn as_bytes(&self) -> &[u8] {
             let start = self.reader.field_offsets[0].start;
             &self.reader.buf[start..self.reader.cursor]
         }
 
-        pub fn iter(&'a self) -> FieldIter<'a> {
+        fn iter(&self) -> FieldIter<'_> {
             FieldIter {
                 index: 0,
-                entry: self
+                buf: &self.reader.buf,
+                cursor: self.reader.cursor,
+                offsets: &self.reader.field_offsets,
+            }
+        }
+    }
+
+    pub struct OwnedEntry {
+        cursor: Pointer,
+        buf: ShiftBuffer<u8>,
+        offsets: Vec<FieldOffset>,
+    }
+
+    impl Entry for OwnedEntry {
+        fn as_bytes(&self) -> &[u8] {
+            let start = self.offsets[0].start;
+            &self.buf[start..self.cursor]
+        }
+
+        fn iter(&self) -> FieldIter<'_> {
+            FieldIter {
+                index: 0,
+                buf: &self.buf,
+                cursor: self.cursor,
+                offsets: &self.offsets,
             }
         }
     }
 
     pub struct FieldIter<'a> {
         index: usize,
-        entry: &'a EntryRef<'a>,
+        cursor: Pointer,
+        buf: &'a ShiftBuffer<u8>,
+        offsets: &'a [FieldOffset],
     }
 
     impl<'a> Iterator for FieldIter<'a> {
         type Item = (&'a [u8], &'a [u8], FieldType);
 
         fn next(&mut self) -> Option<Self::Item> {
-            let r = self.entry.reader;
-            let res = next(&r.buf, r.cursor, &r.field_offsets, self.index);
+            let res = next(self.buf, self.cursor, self.offsets, self.index);
             self.index += 1;
             res
         }
     }
 
     #[inline]
-    fn next<'a>(buf: &'a ShiftBuffer<u8>, stop: Pointer, offsets: &'a [FieldOffset], index: usize) -> Option<(&'a[u8], &'a[u8], FieldType)>{
+    fn next<'a>(
+        buf: &'a ShiftBuffer<u8>,
+        stop: Pointer,
+        offsets: &'a [FieldOffset],
+        index: usize,
+    ) -> Option<(&'a [u8], &'a [u8], FieldType)> {
         let field_stop = if index == offsets.len() {
             // The cursor points to the first byte of the next entry. Thus,
             // cursor-2 points to the first NL after the last field of this
@@ -306,16 +344,13 @@ pub mod parser {
         res
     }
 
-    pub struct OwnedEntry {
-        // tbd
-    }
-
     #[derive(Clone, Debug)]
     pub enum FieldType {
         Binary,
         String,
     }
 
+    #[derive(Clone)]
     struct FieldOffset {
         start: Pointer,
         namelen: usize,
@@ -325,7 +360,7 @@ pub mod parser {
 
 pub mod sync {
     use super::{
-        parser::{BufferState, EntryRef, JournalExportParser},
+        parser::{BufferState, JournalExportParser, RefEntry},
         JournalExportReadError, DEFAULT_BUF_SIZE,
     };
     use std::io::Read;
@@ -370,7 +405,7 @@ pub mod sync {
             }
         }
 
-        pub fn get_entry(&self) -> EntryRef<'_> {
+        pub fn get_entry(&self) -> RefEntry<'_> {
             self.parse_state.get_entry()
         }
     }
@@ -414,7 +449,7 @@ impl<R: AsyncRead + Unpin> JournalExportAsyncRead<R> {
         }
     }
 
-    pub fn get_entry(&self) -> EntryRef<'_> {
+    pub fn get_entry(&self) -> RefEntry<'_> {
         self.parse_state.get_entry()
     }
 }
@@ -441,7 +476,7 @@ impl JournalExportReadError {
 mod tests {
     use std::fs::OpenOptions;
 
-    use super::{JournalExportRead, JournalExportReadError};
+    use super::{Entry, JournalExportRead, JournalExportReadError};
 
     #[test]
     fn can_parse_host_files() -> Result<(), Box<dyn std::error::Error + 'static>> {
