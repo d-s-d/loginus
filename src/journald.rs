@@ -33,7 +33,7 @@
 use thiserror::Error;
 
 use self::parser::{BufferState, JournalExportParser};
-pub use self::{parser::Entry, sync::JournalExportRead};
+pub use self::{parser::EntryRef, sync::JournalExportRead};
 use futures::{AsyncRead, AsyncReadExt};
 
 // We assume that 16KiB (half L1 cache on modern CPUs) is enough to hold at
@@ -201,9 +201,8 @@ pub mod parser {
         }
 
         #[inline]
-        pub fn get_entry(&self) -> Entry<'_> {
-            Entry {
-                index: 0,
+        pub fn get_entry(&self) -> EntryRef<'_> {
+            EntryRef {
                 reader: self,
             }
         }
@@ -241,47 +240,70 @@ pub mod parser {
         Eof,
     }
 
-    pub struct Entry<'a> {
-        index: usize,
+    pub struct EntryRef<'a> {
         reader: &'a JournalExportParser,
     }
 
-    impl<'a> Entry<'a> {
+    pub trait Entry<'a> {
+        fn as_bytes(&self) -> &'a [u8];
+        fn iter(&'a self) -> FieldIter<'a>;
+    }
+
+    impl<'a> EntryRef<'a> {
         pub fn as_bytes(&self) -> &'a [u8] {
             let start = self.reader.field_offsets[0].start;
             &self.reader.buf[start..self.reader.cursor]
         }
+
+        pub fn iter(&'a self) -> FieldIter<'a> {
+            FieldIter {
+                index: 0,
+                entry: self
+            }
+        }
     }
 
-    impl<'a> Iterator for Entry<'a> {
+    pub struct FieldIter<'a> {
+        index: usize,
+        entry: &'a EntryRef<'a>,
+    }
+
+    impl<'a> Iterator for FieldIter<'a> {
         type Item = (&'a [u8], &'a [u8], FieldType);
 
         fn next(&mut self) -> Option<Self::Item> {
-            let field_stop = if self.index == self.reader.field_offsets.len() {
-                // The cursor points to the first byte of the next entry. Thus,
-                // cursor-2 points to the first NL after the last field of this
-                // entry.
-                self.reader.cursor - 2
-            } else {
-                // The fields are separated by one NL character, therefore
-                // .start-1 of the next field points to the NL character that
-                // terminates this field.
-                self.reader.field_offsets[self.index + 1].start - 1
-            };
-            let res = self.reader.field_offsets.get(self.index).map(|f| {
-                let bin_offset = match &f.typ {
-                    FieldType::Binary => 9,
-                    FieldType::String => 1,
-                };
-                (
-                    &self.reader.buf[f.start..(f.start + f.namelen)],
-                    &self.reader.buf[(f.start + f.namelen + bin_offset)..field_stop],
-                    f.typ.clone(),
-                )
-            });
+            let r = self.entry.reader;
+            let res = next(&r.buf, r.cursor, &r.field_offsets, self.index);
             self.index += 1;
             res
         }
+    }
+
+    #[inline]
+    fn next<'a>(buf: &'a ShiftBuffer<u8>, stop: Pointer, offsets: &'a [FieldOffset], index: usize) -> Option<(&'a[u8], &'a[u8], FieldType)>{
+        let field_stop = if index == offsets.len() {
+            // The cursor points to the first byte of the next entry. Thus,
+            // cursor-2 points to the first NL after the last field of this
+            // entry.
+            stop - 2
+        } else {
+            // The fields are separated by one NL character, therefore
+            // .start-1 of the next field points to the NL character that
+            // terminates this field.
+            offsets[index + 1].start - 1
+        };
+        let res = offsets.get(index).map(|f| {
+            let bin_offset = match &f.typ {
+                FieldType::Binary => 9,
+                FieldType::String => 1,
+            };
+            (
+                &buf[f.start..(f.start + f.namelen)],
+                &buf[(f.start + f.namelen + bin_offset)..field_stop],
+                f.typ.clone(),
+            )
+        });
+        res
     }
 
     pub struct OwnedEntry {
@@ -303,7 +325,7 @@ pub mod parser {
 
 pub mod sync {
     use super::{
-        parser::{BufferState, Entry, JournalExportParser},
+        parser::{BufferState, EntryRef, JournalExportParser},
         JournalExportReadError, DEFAULT_BUF_SIZE,
     };
     use std::io::Read;
@@ -348,7 +370,7 @@ pub mod sync {
             }
         }
 
-        pub fn get_entry(&self) -> Entry<'_> {
+        pub fn get_entry(&self) -> EntryRef<'_> {
             self.parse_state.get_entry()
         }
     }
@@ -392,7 +414,7 @@ impl<R: AsyncRead + Unpin> JournalExportAsyncRead<R> {
         }
     }
 
-    pub fn get_entry(&self) -> Entry<'_> {
+    pub fn get_entry(&self) -> EntryRef<'_> {
         self.parse_state.get_entry()
     }
 }
@@ -438,8 +460,9 @@ mod tests {
             loop {
                 match export_read.parse_next() {
                     Ok(_) => {
-                        let i = export_read.get_entry();
+                        let e = export_read.get_entry();
                         let mut found_cursor = false;
+                        let i = e.iter();
                         for (name, _content, _typ) in i {
                             let name = String::from_utf8_lossy(name);
                             let content = String::from_utf8_lossy(_content);

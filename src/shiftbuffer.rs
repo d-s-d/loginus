@@ -178,6 +178,18 @@ impl<T: Default + Copy> ShiftBuffer<T> {
         debug_assert!(self.lower <= p && p <= self.upper);
         p - self.offset
     }
+
+    /// Create a shift buffer that has the size of the current window and copy
+    /// the content into the shift buffer.
+    pub fn clone_window(&self) -> ShiftBuffer<T> {
+        let (l, u) = (self.lower, self.upper);
+        ShiftBuffer {
+            buf: self[l..u].to_vec(),
+            offset: l,
+            lower: l,
+            upper: u,
+        }
+    }
 }
 
 impl<T: Default + Copy> Index<Pointer> for ShiftBuffer<T> {

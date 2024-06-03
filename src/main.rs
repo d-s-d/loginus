@@ -1,4 +1,4 @@
-use loginus::journald::{Entry, JournalExportRead, JournalExportReadError};
+use loginus::journald::{EntryRef, JournalExportRead, JournalExportReadError};
 use rand::Rng;
 use sha2::Digest;
 use std::{
@@ -151,8 +151,8 @@ fn split(out_dir: PathBuf, src: PathBuf) -> io::Result<()> {
     }
 }
 
-fn get_time_stamp(entry: Entry<'_>) -> u64 {
-    for (name, content, _) in entry {
+fn get_time_stamp(entry: EntryRef<'_>) -> u64 {
+    for (name, content, _) in entry.iter() {
         if name == b"__REALTIME_TIMESTAMP" {
             return String::from_utf8_lossy(content)
                 .parse::<u64>()
@@ -189,7 +189,7 @@ fn show_entry(src: PathBuf, n: usize) -> io::Result<()> {
         }
 
         if count == n {
-            for (name, content, _) in jreader.get_entry() {
+            for (name, content, _) in jreader.get_entry().iter() {
                 let name = String::from_utf8_lossy(name);
                 let content = String::from_utf8_lossy(content);
                 println!("{}={}", name, content);
