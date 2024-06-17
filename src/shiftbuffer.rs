@@ -4,7 +4,7 @@
 //! A [ShiftBuffer] enables pointer arithmetics on data that is occasionally
 //! 'shifted'; i.e. the data is being moved to the beginning of the buffer to
 //! retain its size while allowing for further data to be read into the buffer.
-//! To that end, [ShiftBuffer] maintains a sliding window which can be exteded
+//! To that end, [ShiftBuffer] maintains a sliding window which can be extended
 //! (the upper end moves up) or shrunk (the lower end moves up). To access the
 //! data within the window, the buffer can be indexed using a [Pointer].
 //!
@@ -19,23 +19,23 @@
 //! 'absolute' and it can be revealed with [Pointer::abs].
 //!
 //! ```text
+//! before:
 //!         |<----------- buffer ----------->|
 //!         |     |<----- window ----->|
 //!                           ^
 //!                           |
-//! ~~ data stream ~~~~~~~~[Cursor]~~~~~
-//!                           |
+//! ~~ data stream ~~~~~~~~[cursor]~~~~~
+//! after:                    |
 //!                           v
 //!               |<----------- buffer ----------->|
 //!               |<----- window ----->|<- free -->|
-//!
 //! ```
 //!
 //! Following the illustration above, this is the state after the window has
 //! been extended:
 //!
 //! ```text
-//! ~~ data stream ~~~~~~~~[Cursor]~~~~~~~~~~
+//! ~~ data stream ~~~~~~~~[cursor]~~~~~~~~~~
 //!                           |
 //!                           v
 //!               |<----------- buffer ----------->|
@@ -123,6 +123,7 @@ impl<T: Default + Copy> ShiftBuffer<T> {
         self.lower
     }
 
+    /// Moves the upper end of the window by `n`.
     pub fn extend(&mut self, n: usize) -> Pointer {
         assert!(self.relative_pos(self.upper) + n <= self.buf.len());
         self.upper += n;
@@ -179,8 +180,7 @@ impl<T: Default + Copy> ShiftBuffer<T> {
         p - self.offset
     }
 
-    /// Create a shift buffer that has the size of the current window and copy
-    /// the content into the shift buffer.
+    /// Create a shift buffer that contains a copy of the current window.
     pub fn clone_window(&self) -> ShiftBuffer<T> {
         let (l, u) = (self.lower, self.upper);
         ShiftBuffer {

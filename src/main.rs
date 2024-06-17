@@ -77,7 +77,7 @@ fn merge_journals(out: PathBuf, srcs: Vec<PathBuf>) -> std::io::Result<()> {
 
     let mut counts = vec![];
     for idx in 0..jreaders.len() {
-        if let Err(JournalExportReadError::Eof) = jreaders[idx].parse_next() {
+        if let Ok(None) = jreaders[idx].parse_next() {
             jreaders.remove(idx);
         } else {
             counts.push(0);
@@ -98,7 +98,7 @@ fn merge_journals(out: PathBuf, srcs: Vec<PathBuf>) -> std::io::Result<()> {
         outfile.write_all(jreaders[min_idx].get_entry().as_bytes())?;
 
         match jreaders[min_idx].parse_next() {
-            Err(JournalExportReadError::Eof) => {
+            Ok(None) => {
                 jreaders.remove(min_idx);
                 println!("count at {}: {}", min_idx, counts[min_idx]);
                 counts.remove(min_idx);
@@ -119,8 +119,8 @@ fn sample_journal(dst: PathBuf, sample_rate: f64, src: PathBuf) -> io::Result<()
     let mut rng = rand::thread_rng();
     loop {
         match jreader.parse_next() {
+            Ok(None) => return Ok(()),
             Ok(_) => (),
-            Err(JournalExportReadError::Eof) => return Ok(()),
             Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
         }
 
@@ -135,8 +135,8 @@ fn split(out_dir: PathBuf, src: PathBuf) -> io::Result<()> {
 
     loop {
         match jreader.parse_next() {
+            Ok(None) => return Ok(()),
             Ok(_) => (),
-            Err(JournalExportReadError::Eof) => return Ok(()),
             Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
         }
 
@@ -168,8 +168,8 @@ fn count(src: PathBuf) -> io::Result<usize> {
     let mut count = 0;
     loop {
         match jreader.parse_next() {
+            Ok(None) => return Ok(count),
             Ok(_) => (),
-            Err(JournalExportReadError::Eof) => return Ok(count),
             Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
         }
 
@@ -183,8 +183,8 @@ fn show_entry(src: PathBuf, n: usize) -> io::Result<()> {
     let mut count = 0;
     loop {
         match jreader.parse_next() {
+            Ok(None) => return Ok(()),
             Ok(_) => (),
-            Err(JournalExportReadError::Eof) => return Ok(()),
             Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
         }
 
